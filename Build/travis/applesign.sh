@@ -43,12 +43,13 @@ version="$(cat BTCPayServer.Vault/Version.csproj | sed -n 's/.*<Version>\(.*\)<\
 title="$(cat BTCPayServer.Vault/BTCPayServer.Vault.csproj | sed -n 's/.*<Title>\(.*\)<\/Title>.*/\1/p')"
 AZURE_ACCOUNT_NAME="$(echo "$AZURE_STORAGE_CONNECTION_STRING" | cut -d'=' -f3 | cut -d';' -f1)"
 DIRECTORY_NAME="dist-$TRAVIS_BUILD_ID"
-dmg_file="BTCPayServerVault-$version.dmg"
+RUNTIME="osx-x64"
+tar_file="BTCPayServerVault-${RUNTIME}-$version.tar.gz"
 
 mkdir -p dist
-download_url="https://$AZURE_ACCOUNT_NAME.blob.core.windows.net/$AZURE_STORAGE_CONTAINER/$DIRECTORY_NAME/$dmg_file"
-echo "Download $download_url to dist/$dmg_file"
-wget -qO "dist/$dmg_file" "https://$AZURE_ACCOUNT_NAME.blob.core.windows.net/$AZURE_STORAGE_CONTAINER/$DIRECTORY_NAME/$dmg_file"
+download_url="https://$AZURE_ACCOUNT_NAME.blob.core.windows.net/$AZURE_STORAGE_CONTAINER/$DIRECTORY_NAME/$tar_file"
+echo "Download $download_url to dist/$tar_file"
+wget -qO "dist/$tar_file" "https://$AZURE_ACCOUNT_NAME.blob.core.windows.net/$AZURE_STORAGE_CONTAINER/$DIRECTORY_NAME/$tar_file"
 echo "Downloaded"
 cd dist
 if ! (echo "$APPLE_DEV_ID_CERT" | base64 --decode > dev.p12); then
@@ -56,19 +57,24 @@ if ! (echo "$APPLE_DEV_ID_CERT" | base64 --decode > dev.p12); then
     exit 1
 fi
 
-dmg_file_writable="$dmg_file.writable.dmg"
+mkdir -p "$dmg_folder"
+tar -C "$dmg_folder" -xvf "$tar_file"
+rm "$tar_file"
+brew install create-dmg
 
-echo "Mounting the $dmg_file file to $mount_point"
-mount_point="temp"
-sudo hdiutil attach -mountpoint "$mount_point" "$dmg_file" -noverify -nobrowse -noautoopen
+# We want to create the .DSStore and .fseventsd so the installer looks nice
+create-dmg --volname "temp" \
+           --volicon "$dmg_folder/.VolumeIcon.icns" \
+           --background "$dmg_folder/.background/Logo_with_text_small.png" \ 
+           --window-pos 200 120 --window-size 600 440 \
+           --app-drop-link 500 150 \
+           --icon "${title}" 110 150 --hdiutil-verbose "temp.dmg" empty
 
-dmg_copy="temp-copy"
-echo "Extracting $dmg_file to folder $dmg_copy"
-mkdir "$dmg_copy"
-sudo cp -R -p "$mount_point/" "$dmg_copy"
-hdiutil detach "$mount_point"
-echo "$dmg_file detached"
-rm "$dmg_file"
+sudo hdiutil attach -mountpoint "temp" "temp.dmg" -noverify -nobrowse -noautoopen
+sudo cp -R -p "temp/.fseventsd" "$dmg_folder/"
+sudo cp "temp/.DS_Store" "$dmg_folder/"
+hdiutil detach "temp"
+rm -rf "temp"
 
 key_chain="build.keychain"
 key_chain_pass="mysecretpassword"
@@ -80,7 +86,7 @@ CERT_IDENTITY=$(security find-identity -v -p codesigning "$key_chain" | head -1 
 echo "Signing with identity $CERT_IDENTITY"
 security set-key-partition-list -S apple-tool:,apple: -s -k "$key_chain_pass" "$key_chain"
 
-app_path="$dmg_copy/$title.app"
+app_path="$dmg_folder/$title.app"
 
 # codesign don't like that the entitlements file path have spaces, so we move it to local folder.
 sudo cp "$app_path/Contents/entitlements.plist" "./"
@@ -88,10 +94,13 @@ echo "Signing $app_path..."
 code_sign_args="--deep --force --options runtime --timestamp --entitlements entitlements.plist"
 sudo codesign $code_sign_args --sign "$CERT_IDENTITY" "$app_path"
 
+dmg_file="BTCPayServerVault-${RUNTIME}-$version.dmg"
 echo "Create $dmg_file with signature"
-sudo hdiutil create "$dmg_file_writable" -ov -volname "$title" -fs HFS+ -srcfolder "$dmg_copy" 
+dmg_file_writable="$dmg_file.writable.dmg"
+sudo hdiutil create "$dmg_file_writable" -ov -volname "$title" -fs HFS+ -srcfolder "$dmg_folder" 
 sudo hdiutil convert "$dmg_file_writable" -format UDZO -o "$dmg_file"
 sudo rm -rf "$dmg_file_writable"
+rm -rf "$dmg_folder"
 
 echo "Signing $dmg_file..."
 sudo codesign $code_sign_args --sign "$CERT_IDENTITY" "$dmg_file"
